@@ -73,10 +73,10 @@ jobs:
           kubectl --kubeconfig=$HOME/.kube/members.config --context member2 apply -f https://raw.githubusercontent.com/volcano-sh/volcano/${VOLCANO_VERSION}/installer/volcano-development.yaml
 
           echo "Waiting for Volcano to be ready on member1..."
-          kubectl --kubeconfig=$HOME/.kube/members.config --context member1 wait --for=condition=ready pod --all -n volcano-system --timeout=300s
+          kubectl --kubeconfig=$HOME/.kube/members.config --context member1 wait --for=condition=ready pod --all -n volcano-system --timeout=600s
 
           echo "Waiting for Volcano to be ready on member2..."
-          kubectl --kubeconfig=$HOME/.kube/members.config --context member2 wait --for=condition=ready pod --all -n volcano-system --timeout=300s
+          kubectl --kubeconfig=$HOME/.kube/members.config --context member2 wait --for=condition=ready pod --all -n volcano-system --timeout=600s
 
       - name: Build and Load Volcano-Global Images
         run: |
