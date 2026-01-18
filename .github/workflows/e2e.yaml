@@ -1,0 +1,154 @@
+name: E2E Tests
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    name: E2E Test
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        k8s: [v1.29.0]
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: false
+          swap-storage: false
+
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+      - name: Setup Kind and Karmada
+        run: |
+          # Clone Karmada for its setup scripts
+          git clone https://github.com/karmada-io/karmada.git /tmp/karmada
+          cd /tmp/karmada
+          # Use a stable version of Karmada
+          git checkout v1.16.1
+
+          # Setup Karmada environment (creates kind-karmada-host, member1, member2)
+          # We export settings to match what local-up-karmada expects or sets
+          export CLUSTER_VERSION=kindest/node:${{ matrix.k8s }}
+          ./hack/local-up-karmada.sh
+
+          # Export kubeconfig for subsequent steps
+          echo "KUBECONFIG=$HOME/.kube/karmada.config:$HOME/.kube/members.config" >> $GITHUB_ENV
+
+      - name: Install Volcano on Member Clusters
+        run: |
+          # Install Volcano on member1 and member2
+          # Using the version specified in docs/deploy/README.md or latest stable
+          VOLCANO_VERSION=release-1.10
+
+          echo "Installing Volcano on member1..."
+          kubectl --kubeconfig=$HOME/.kube/members.config --context member1 apply -f https://raw.githubusercontent.com/volcano-sh/volcano/${VOLCANO_VERSION}/installer/volcano-development.yaml
+
+          echo "Installing Volcano on member2..."
+          kubectl --kubeconfig=$HOME/.kube/members.config --context member2 apply -f https://raw.githubusercontent.com/volcano-sh/volcano/${VOLCANO_VERSION}/installer/volcano-development.yaml
+
+          echo "Waiting for Volcano to be ready on member1..."
+          kubectl --kubeconfig=$HOME/.kube/members.config --context member1 wait --for=condition=ready pod --all -n volcano-system --timeout=300s
+
+          echo "Waiting for Volcano to be ready on member2..."
+          kubectl --kubeconfig=$HOME/.kube/members.config --context member2 wait --for=condition=ready pod --all -n volcano-system --timeout=300s
+
+      - name: Build and Load Volcano-Global Images
+        run: |
+          # Build images
+          # We need to set IMAGE_PREFIX to something local or generic, but since we load into kind it doesn't matter too much
+          # as long as the deployment yaml matches.
+          export IMAGE_PREFIX=volcanosh
+          export TAG=latest
+          export DOCKER_PLATFORMS=linux/amd64
+          make images
+
+          # Load images into Kind clusters
+          kind load docker-image volcanosh/volcano-global-controller-manager:latest --name karmada-host
+          kind load docker-image volcanosh/volcano-global-webhook-manager:latest --name karmada-host
+
+      - name: Deploy Volcano-Global
+        run: |
+          export KUBECONFIG=$HOME/.kube/karmada.config
+
+          # 3. Deploy Kubernetes Reflector
+          kubectl --context karmada-host -n kube-system apply -f https://github.com/emberstack/kubernetes-reflector/releases/download/v7.1.262/reflector.yaml
+
+          # Wait for reflector to be ready ideally, but apply might pass. 
+          # Sleeping briefly or waiting for CRD establishment might be safer.
+          sleep 10
+
+          kubectl --context karmada-host annotate secret karmada-webhook-config \
+            reflector.v1.k8s.emberstack.com/reflection-allowed="true" \
+            reflector.v1.k8s.emberstack.com/reflection-auto-namespaces="volcano-global" \
+            reflector.v1.k8s.emberstack.com/reflection-auto-enabled="true" \
+            --namespace=karmada-system
+
+          # 4. Deploy volcano-global components
+          # Modify yamls to use PullPolicy: IfNotPresent or Never if needed, relying on 'latest' tag behavior with kind.
+          # Since we loaded 'latest', we should ensure manifests use 'latest' or we update them.
+          # Assuming manifests in docs/deploy use a specific tag or latest. Checking them would be good, 
+          # but for now we apply and if image pull fails we might need sed.
+
+          # Create namespace
+          kubectl --context karmada-apiserver apply -f docs/deploy/volcano-global-namespace.yaml
+          kubectl --context karmada-host apply -f docs/deploy/volcano-global-namespace.yaml
+
+          # Apply Controller and Webhook
+          kubectl --context karmada-host apply -f docs/deploy/volcano-global-controller-manager.yaml
+          kubectl --context karmada-host apply -f docs/deploy/volcano-global-webhook-manager.yaml
+
+          # Apply Webhook Config
+          kubectl --context karmada-apiserver apply -f docs/deploy/volcano-global-webhooks.yaml
+
+          # 5. Apply Volcano CRDs to Karmada Control Plane
+          kubectl --context karmada-apiserver apply -f https://github.com/volcano-sh/volcano/raw/release-1.10/installer/helm/chart/volcano/crd/bases/batch.volcano.sh_jobs.yaml
+          kubectl --context karmada-apiserver apply -f https://github.com/volcano-sh/volcano/raw/release-1.10/installer/helm/chart/volcano/crd/bases/scheduling.volcano.sh_queues.yaml
+
+          # 6. Apply Resource Interpreters
+          kubectl --context karmada-apiserver apply -f docs/deploy/vcjob-resource-interpreter-customization.yaml
+          kubectl --context karmada-apiserver apply -f docs/deploy/queue-resource-interpreter-customization.yaml
+
+          # 7. Apply Propagation Policy
+          kubectl --context karmada-apiserver apply -f docs/deploy/volcano-global-all-queue-propagation.yaml
+          kubectl --context karmada-apiserver label clusterpropagationpolicy volcano-global-all-queue-propagation resourcetemplate.karmada.io/deletion-protected=Always
+
+          # Wait for deployment rollouts
+          kubectl --context karmada-host -n volcano-global wait --for=condition=ready pod --all --timeout=300s
+
+      - name: Run E2E Tests
+        run: |
+          chmod +x hack/e2e.sh
+          ./hack/e2e.sh
+
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: _output/e2e-logs/
