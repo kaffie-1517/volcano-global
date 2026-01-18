@@ -143,7 +143,8 @@ jobs:
           kubectl --context karmada-apiserver label clusterpropagationpolicy volcano-global-all-queue-propagation resourcetemplate.karmada.io/deletion-protected=Always
 
           # Wait for deployment rollouts
-          kubectl --context karmada-host -n volcano-global wait --for=condition=ready pod --all --timeout=300s
+          kubectl --context karmada-host -n volcano-global rollout status deployment/volcano-global-controller-manager --timeout=600s
+          kubectl --context karmada-host -n volcano-global rollout status deployment/volcano-global-webhook-manager --timeout=600s
 
       - name: Run E2E Tests
         run: |
