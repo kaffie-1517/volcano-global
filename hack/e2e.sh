@@ -52,12 +52,12 @@ echo "Job is Running. Verifying Member Clusters..."
 
 # Check member1
 echo "Checking member1..."
-PODS_MEMBER1=$(kubectl --context member1 get pods -l app=mindspore-cpu -o jsonpath='{.items[*].status.phase}' --kubeconfig=$HOME/.kube/members.config)
+PODS_MEMBER1=$(kubectl --context member1 get pods -l volcano.sh/job-name=mindspore-cpu -o jsonpath='{.items[*].status.phase}' --kubeconfig=$HOME/.kube/members.config)
 echo "Member1 Pods: $PODS_MEMBER1"
 
 # Check member2
 echo "Checking member2..."
-PODS_MEMBER2=$(kubectl --context member2 get pods -l app=mindspore-cpu -o jsonpath='{.items[*].status.phase}' --kubeconfig=$HOME/.kube/members.config)
+PODS_MEMBER2=$(kubectl --context member2 get pods -l volcano.sh/job-name=mindspore-cpu -o jsonpath='{.items[*].status.phase}' --kubeconfig=$HOME/.kube/members.config)
 echo "Member2 Pods: $PODS_MEMBER2"
 
 # Simple validation: we expect some pods to be Running.
