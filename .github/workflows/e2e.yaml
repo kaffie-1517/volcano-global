@@ -84,6 +84,9 @@ jobs:
 
       - name: Build and Load Volcano-Global Images
         run: |
+          # Patch Dockerfile to use Go 1.24 (required by go.mod) without modifying source
+          sed -i 's/FROM golang:1.22.11 AS builder/FROM golang:1.24 AS builder/g' installer/dockerfile/webhook-manager/Dockerfile
+
           # Build images
           # We need to set IMAGE_PREFIX to something local or generic, but since we load into kind it doesn't matter too much
           # as long as the deployment yaml matches.
